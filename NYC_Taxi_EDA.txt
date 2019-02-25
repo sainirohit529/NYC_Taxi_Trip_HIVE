@@ -1,0 +1,429 @@
+-- Adding the required JAR
+
+ADD JAR /opt/cloudera/parcels/CDH/lib/hive/lib/hive-hcatalog-core-1.1.0-cdh5.11.2.jar;
+SET hive.exec.max.dynamic.partitions=100000;
+SET hive.exec.max.dynamic.partitions.pernode=100000;
+
+
+-- Create table to load data from HDFS
+DROP TABLE nyc_taxi_data_rohit52;
+
+CREATE external table if not exists nyc_taxi_data_rohit52
+	(
+	VendorID int ,
+    tpep_pickup_datetime TIMESTAMP ,
+    tpep_dropoff_datetime TIMESTAMP ,
+    passenger_count int ,
+    trip_distance double ,
+    RatecodeID int ,
+    store_and_fwd_flag string ,
+    PULocationID int ,
+    DOLocationID int ,
+    payment_type int ,
+    fare_amount double ,
+    extra double ,
+    mta_tax double ,
+    tip_amount double ,
+    tolls_amount double ,
+    improvement_surcharge double ,
+    total_amount double 
+    )
+    ROW FORMAT DELIMITED
+    FIELDS TERMINATED BY ',' 
+    LINES TERMINATED BY '\n'
+    LOCATION '/common_folder/nyc_taxi_data/'
+    tblproperties("skip.header.line.count"="1"); 
+    
+-------------------- Data Cleaning --------------------------------
+    
+   SELECT COUNT(*) FROM nyc_taxi_data_rohit52
+-- 1174569
+
+-- Since we need to analyse data only for 2017 year and Nov, Dec Month. Hence filtering rows accordingly 
+-- and inserting data in a new tabLe
+
+	
+
+
+DROP TABLE nyc_data_required_month_rohit52
+create external table if not exists nyc_data_required_month_rohit52
+	(
+	VendorID int ,
+    tpep_pickup_datetime TIMESTAMP ,
+    tpep_dropoff_datetime TIMESTAMP ,
+    passenger_count int ,
+    trip_distance double ,
+    RatecodeID int ,
+    store_and_fwd_flag string ,
+    PULocationID int ,
+    DOLocationID int ,
+    payment_type int ,
+    fare_amount double ,
+    extra double ,
+    mta_tax double ,
+    tip_amount double ,
+    tolls_amount double ,
+    improvement_surcharge double ,
+    total_amount double 
+    )  
+    ROW FORMAT DELIMITED
+    FIELDS TERMINATED BY ','
+    STORED AS TEXTFILE
+    LOCATION '/user/hive/warehouse/nyc_data_rohit';
+	
+	
+	-- Lets insert data only for 2017 year and November,December month
+	
+	INSERT OVERWRITE TABLE nyc_data_required_month_rohit52
+	SELECT * FROM nyc_taxi_data_rohit52
+	WHERE YEAR(date_format(tpep_pickup_datetime, 'yyyy-MM-dd')) = '2017'
+    AND MONTH(date_format(tpep_pickup_datetime, 'yyyy-MM-dd')) in ('11','12')
+	
+-- Lets check the total no of records
+   SELECT COUNT(*) FROM nyc_data_required_month_rohit52
+-- 1174555
+
+-- Checking for duplicate records
+   SELECT COUNT(*) FROM ( SELECT DISTINCT * FROM nyc_data_required_month_rohit52 )t1;
+-- 1174551
+
+-- There are 4 duplicate entries in the dataset. Hence we need to remove them
+    
+    INSERT OVERWRITE TABLE nyc_data_required_month_rohit52
+	SELECT DISTINCT * FROM nyc_data_required_month_rohit52
+    
+
+--  Lets check the no of records provided by each vendor 
+    SELECT count(*)as vendor_count,vendorid 
+    FROM nyc_taxi_data_rohit52
+    GROUP BY vendorid;
+    
+ --   vendor_count	vendorid
+ --	   647183	       2
+ --	   527386	       1
+
+---------------------------------------------------------------------- 
+ --- Check if there is any data discripency in passenger count coulmn
+		
+	SELECT count(*) AS rows ,passenger_count 
+	FROM nyc_data_required_month_rohit52 
+	GROUP BY passenger_count 
+	ORDER BY passenger_count
+
+-- Since Taxi can occupy maximum 6 passengers or minimum 1 passenger and we have a very small proportion of passenger count above 7 
+-- hence we can treat them as outliers and clean our data
+    
+    
+	INSERT OVERWRITE TABLE nyc_data_required_month_rohit52
+	SELECT * FROM nyc_data_required_month_rohit52
+    WHERE passenger_count  NOT IN (7,8,9,0)
+
+----------------------------------------------------------------------    
+-- Checking for inconsistency in trip distance column
+-- it should not be 0 or in negative
+    
+    SELECT MIN(trip_distance),MAX(trip_distance) FROM nyc_data_required_month_rohit52
+
+-- Removing rows having trip_distance = 0
+    
+    INSERT OVERWRITE TABLE nyc_data_required_month_rohit52
+    SELECT * FROM nyc_data_required_month_rohit52 where trip_distance <> 0 	
+
+-------------------------------------------------------------------------
+-- Check if difference between pickup time is more than the drop off time 
+    SELECT count(*) FROM nyc_data_required_month_rohit52
+    WHERE (UNIX_TIMESTAMP(tpep_dropoff_datetime) - UNIX_TIMESTAMP(tpep_pickup_datetime)) < 0
+
+-- 73 rows  -- Removing these rows    
+    INSERT OVERWRITE TABLE nyc_data_required_month_rohit52
+    SELECT * FROM nyc_data_required_month_rohit52 WHERE (UNIX_TIMESTAMP(tpep_dropoff_datetime) - UNIX_TIMESTAMP(tpep_pickup_datetime)) > 0
+
+--------------------------------------------------------------------------
+-- Check for RateCodeID data discripency
+    SELECT DISTINCT (RateCodeID) FROM nyc_data_required_month_rohit52
+   
+-- Removing records having ratecodeid as 99
+
+    INSERT OVERWRITE TABLE nyc_data_required_month_rohit52
+    SELECT * FROM nyc_data_required_month_rohit52 where RateCodeID <> 99
+
+---------------------------------------------------------------------------
+-- Checking for data discripency in store_and_fwd_flag
+    SELECT DISTINCT (store_and_fwd_flag) FROM nyc_data_required_month_rohit52
+    -- Looks fine
+    
+---------------------------------------------------------------------------- 
+-- Checking for data discripency in pulocationid
+    SELECT DISTINCT (pulocationid) FROM nyc_data_required_month_rohit52
+    -- Looks Fine
+-----------------------------------------------------------------------------    
+-- Checking for data discripency in extra
+    
+    SELECT DISTINCT (extra) FROM nyc_data_required_month_rohit52
+-- since extra column contain -10.6 as value which is not possible hence filtering out this row    
+ 
+    INSERT OVERWRITE TABLE nyc_data_required_month_rohit52
+    SELECT * FROM nyc_data_required_month_rohit52 where extra <> -10.6   
+    
+-----------------------------------------------------------------------------
+-- Checking for data discripency in total_amount
+   --  Total Amount should be equal to or greater than 0
+   
+    INSERT OVERWRITE TABLE nyc_data_required_month_rohit52
+    SELECT * FROM nyc_data_required_month_rohit52 where total_amount >= 0 
+    
+------------------------------------------------------------------------------    
+
+ -- Now data seems fine and we can proceed with the analysis 
+ -- Lets first create Partition Table on basis of Month
+ 
+ DROP TABLE nyc_data_partitioned_month_rohit52
+ create external table if not exists nyc_data_partitioned_month_rohit52
+	(
+	VendorID int ,
+    tpep_pickup_datetime TIMESTAMP ,
+    tpep_dropoff_datetime TIMESTAMP ,
+    passenger_count int ,
+    trip_distance double ,
+    RatecodeID int ,
+    store_and_fwd_flag string ,
+    PULocationID int ,
+    DOLocationID int ,
+    payment_type int ,
+    fare_amount double ,
+    extra double ,
+    mta_tax double ,
+    tip_amount double ,
+    tolls_amount double ,
+    improvement_surcharge double ,
+    total_amount double 
+    )
+    partitioned by (yr int, mnth int)
+    location '/user/hive/warehouse/nyc_data_rohit_partitioned';
+    
+    -- Insert data in this table
+    
+    insert overwrite table nyc_data_partitioned_month_rohit52 partition(yr, mnth)
+    select  VendorID ,
+            tpep_pickup_datetime ,
+            tpep_dropoff_datetime  ,
+            passenger_count,
+            trip_distance,
+            RatecodeID ,
+            store_and_fwd_flag ,
+            PULocationID,
+            DOLocationID,
+            payment_type,
+            fare_amount ,
+            extra ,
+            mta_tax ,  
+            tip_amount ,
+            tolls_amount ,
+            improvement_surcharge,
+            total_amount,
+            YEAR(date_format(tpep_pickup_datetime, 'yyyy-MM-dd')) as yr, 
+            MONTH(date_format(tpep_pickup_datetime, 'yyyy-MM-dd')) as mnth
+    from nyc_data_required_month_rohit52;
+    
+    
+--- Now create ORC table to faster the query performance
+
+    DROP TABLE nyc_data_orc_rohit52
+    create external table if not exists nyc_data_orc_rohit52
+	(VendorID int ,
+    tpep_pickup_datetime TIMESTAMP ,
+    tpep_dropoff_datetime TIMESTAMP ,
+    passenger_count int ,
+    trip_distance double ,
+    RatecodeID int ,
+    store_and_fwd_flag string ,
+    PULocationID int ,
+    DOLocationID int ,
+    payment_type int ,
+    fare_amount double ,
+    extra double ,
+    mta_tax double ,
+    tip_amount double ,
+    tolls_amount double ,
+    improvement_surcharge double ,
+    total_amount double 
+    )
+    partitioned by (yr int, mnth int)
+	stored as orc location '/user/hive/warehouse/nyc_data_rohit_orc'
+	tblproperties ("orc.compress"="SNAPPY");
+
+    insert overwrite table nyc_data_orc_rohit52 partition(yr , mnth)
+	select * from nyc_data_partitioned_month_rohit52;
+
+-------------------------------------------------------------------------
+--Finding out which vendor is providing bad data
+    SELECT count(*)as vendor_count,vendorid 
+    FROM nyc_data_orc_rohit52
+    GROUP BY vendorid;
+  
+--   	vendor_count	vendorid
+--          527382	        1
+--      	646610	        2
+
+-- VendorID 1, i.e  Creative Mobile Technologies is providing more inconsistent data with around 573 inconsistencies in the records. 
+  
+-------------------------------------------------------------------------    
+    
+-- Compare the overall average fare per trip for November and December.
+    
+    SELECT avg(fare_amount) , mnth
+    FROM nyc_data_orc_rohit52
+    GROUP BY mnth
+
+--    12.841014121916528	December
+-- 	  13.050123579542964	November
+
+---------------------------------------------------------------------------
+
+-- Explore the ‘number of passengers per trip’ - 
+-- how many trips are made by each level of ‘Passenger_count’? 
+-- Do most people travel solo or with other people?
+
+    SELECT count(*) as no_of_trips, passenger_count
+    FROM nyc_data_orc_rohit52
+    GROUP BY passenger_count
+    ORDER BY no_of_trips desc
+    
+
+-- 	no_of_trips	   passenger_count
+--	   819941	    1
+--	   175672	    2
+--	    54268	    5
+--	    50414	    3
+--	    32999	    6
+--	    24796	    4
+
+--- As we can see from the data, most of the people prefer to travel alone
+
+------------------------------------------------------------------------
+
+--Which is the most preferred mode of payment?
+
+    SELECT COUNT(*) as trip_count, payment_type 
+    FROM nyc_data_orc_rohit52
+    GROUP BY payment_type
+    ORDER BY trip_count DESC;
+    
+-- 	trip_count	payment_type
+--    782138	  1
+--	  370053      2
+--	  4584	      3
+--	  1315	      4    
+
+-- From the analysis it seems that the most of the people prefer credit card as mode of payment.
+
+----------------------------------------------------------------------
+
+-- What is the average tip paid per trip? 
+-- Compare the average tip with the 25th, 50th and 75th percentiles and 
+-- comment whether the ‘average tip’ is a representative statistic (of the central tendency) 
+-- of ‘tip amount paid’. 
+-- Hint: You may use percentile_approx(DOUBLE col, p): Returns an approximate pth percentile of a 
+-- numeric column (including floating point types) in the group.
+
+    SELECT AVG(tip_amount) FROM  nyc_data_orc_rohit52
+    -- avg tip paid is 1.84
+    
+    SELECT percentile_approx(tip_amount,0.25) FROM  nyc_data_orc_rohit52
+    -- 0
+    SELECT percentile_approx(tip_amount,0.50) FROM  nyc_data_orc_rohit52
+    -- 1.35
+    SELECT percentile_approx(tip_amount,0.75) FROM  nyc_data_orc_rohit52
+    -- 2.45
+
+
+-- So, we can conclude from the above query outputs that the average tip paid per trip is a representative statistic (of the central tendency) of ‘tip amount paid’.
+
+-----------------------------------------------------------------------------
+
+-- Explore the ‘Extra’ (charge) variable - what fraction of total trips have an extra charge is levied? 
+    
+    SELECT a.Extra,a.count_extra,b.tot_count,(a.count_extra/b.tot_count)*100 FROM 
+    (
+        SELECT abc.Extra, COUNT(*) as count_extra FROM nyc_data_orc_rohit52 abc
+        GROUP BY abc.Extra
+    ) a,( SELECT COUNT(*) as tot_count FROM nyc_data_orc_rohit52 c) b
+    
+    --Around 54% of the total trip have an extra charge is levied
+    
+------------------------------------ANALYSIS II------------------------------------------------
+
+--What is the correlation between the number of passengers on any given trip, 
+--and the tip paid per trip? Do multiple travellers tip more compared to solo travellers? Hint: Use CORR(Col_1, Col_2)
+
+    SELECT CORR(passenger_count,tip_amount) FROM nyc_data_orc_rohit52
+    WHERE payment_type <> 2 and tip_amount >0 
+    -- 0.0110
+
+-- This implies that as the number of passengers increases, the tip amount increases. 
+-- So we can conclude that multiple travellers tip more as compared to solo travellers.
+    
+----------------------------------------------------------------------------------------------------
+--Segregate the data into five segments of ‘tip paid’: 
+--[0-5), [5-10), [10-15) , [15-20) and >=20. 
+--Calculate the percentage share of each bucket (i.e. the fraction of trips falling in each bucket).
+
+
+SELECT  tip_paid,cnt as bucket_count,tot as total_count,(cnt/tot)*100 as percentage from
+(
+SELECT count(*) as cnt,tip_paid,b.tot_count as tot  FROM 
+   ( SELECT CASE  
+            when tip_amount >= 0 and tip_amount <5 then '0_5_Bucket'
+            when tip_amount >= 5 and tip_amount <10 then '5_10_Bucket'
+            when tip_amount >= 10 and tip_amount <15 then '10_15_Bucket'
+            when tip_amount >= 15 and tip_amount <20 then '15_20_Bucket'
+            when tip_amount >= 20 then '20_Bucket'
+        END as tip_paid
+    FROM nyc_data_orc_rohit52
+    )a , ( SELECT COUNT(*) as tot_count FROM nyc_data_orc_rohit52 c) b
+    GROUP BY a.tip_paid,b.tot_count
+)a
+ORDER BY bucket_count desc
+
+-- 	tip_paid	    percentage
+--	0_5_Bucket	    92.19 %
+--	5_10_Bucket	    5.65 %
+--	10_15_Bucket	1.83 %
+--	15_20_Bucket	0.22 %
+--	20_Bucket	    0.09 %
+
+-- So as per the above analysis, there are around 92% of the total trips which has given tip between 0 to 5
+-- Also the percentage starts decreasing as the tip amount increases.
+
+--------------------------------------------------------------------------------------------------------------
+
+-- Which month has a greater average ‘speed’ - November or December? 
+-- Note that the variable ‘speed’ will have to be derived from other metrics. Hint: You have columns for distance and time.
+
+    SELECT  date_format(tpep_pickup_datetime,'MM') as Month, 
+    ROUND(AVG(trip_distance/((unix_timestamp(tpep_dropoff_datetime) - unix_timestamp(tpep_pickup_datetime))/3600)), 2) as Average_Speed
+    FROM nyc_data_orc_rohit52 
+    GROUP BY date_format(tpep_pickup_datetime,'MM') ;
+
+-- month	average_speed
+--	11	       11.01
+--	12	        11.1  
+
+---------------------------------------------------------------------------------------------------------
+-- Analyse the average speed of the most happening days of the year, i.e. 31st December (New year’s eve) 
+-- and 25th December (Christmas) and compare it with the overall average. 
+    SELECT  date_format(tpep_pickup_datetime,'dd') as Date, 
+    round(avg(trip_distance/((unix_timestamp(tpep_dropoff_datetime) - unix_timestamp(tpep_pickup_datetime))/3600)), 2) as avg_speed
+    FROM  nyc_data_orc_rohit52 
+    WHERE  date_format(tpep_pickup_datetime,'dd') = 25 AND date_format(tpep_pickup_datetime,'MM') = 12
+    OR date_format(tpep_pickup_datetime,'dd') = 31 AND date_format(tpep_pickup_datetime,'MM') = 12
+    GROUP BY date_format(tpep_pickup_datetime,'dd') ;
+--    Date     avg speed
+--     25	         15.20
+--     31	         13.2  
+
+Select round(avg(trip_distance/((unix_timestamp(tpep_dropoff_datetime) - unix_timestamp(tpep_pickup_datetime))/3600)), 2) as Overall_Average_Speed
+from nyc_data_orc_rohit52;
+
+-- 11.02 is the overall average speed as per the data.
+-- This is low as compared to the average speed of 15.20 miles/hour and 13.2 miles/hour on 25th December and 31st December respectively.
